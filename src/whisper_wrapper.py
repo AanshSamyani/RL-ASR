@@ -89,7 +89,7 @@ class WhisperWithPrompt(torch.nn.Module):
         decoder_input_emb = torch.cat([prompt_emb, sot_emb], dim=1)
 
         tokens: list[int] = []
-        log_probs: list[float] = []
+        log_probs: list[torch.Tensor] = []  # keep as tensors for grad
         all_tokens = [self.tokenizer.sot]
 
         for step in range(max_tokens):
@@ -119,8 +119,10 @@ class WhisperWithPrompt(torch.nn.Module):
                 next_token = logits.argmax(dim=-1)
 
             token_id = next_token.item()
+
+            # Keep log prob as a tensor WITH gradient for RL
             log_prob = F.log_softmax(logits, dim=-1)
-            token_log_prob = log_prob[0, token_id].item()
+            token_log_prob = log_prob[0, token_id]  # stays in graph
 
             if token_id == self.tokenizer.eot:
                 break
@@ -130,7 +132,11 @@ class WhisperWithPrompt(torch.nn.Module):
             all_tokens.append(token_id)
 
         text = self.tokenizer.decode(tokens)
-        log_probs_tensor = torch.tensor(log_probs, device=self.device)
+
+        if log_probs:
+            log_probs_tensor = torch.stack(log_probs)  # preserves grad
+        else:
+            log_probs_tensor = torch.zeros(1, device=self.device, requires_grad=True)
 
         return {
             "text": text.strip(),
