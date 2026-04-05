@@ -13,6 +13,9 @@ from pathlib import Path
 import torch
 import torchaudio
 import whisper
+
+# Use soundfile backend to avoid torchcodec/FFmpeg dependency
+torchaudio.set_audio_backend("soundfile")
 from torch.utils.data import Dataset
 
 NOISE_TYPES_GAUSSIAN = [

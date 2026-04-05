@@ -1,6 +1,6 @@
 .claude/
 results/
-data/
+/data/
 __pycache__/
 *.pyc
 *.egg-info/
