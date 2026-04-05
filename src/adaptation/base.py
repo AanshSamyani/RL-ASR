@@ -1,10 +1,12 @@
 """Base adapter interface for test-time adaptation strategies."""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 
 import torch
 
-from ..whisper_wrapper import WhisperWithPrompt
+from src.whisper_wrapper import WhisperWithPrompt
 
 
 class BaseAdapter(ABC):
@@ -13,12 +15,12 @@ class BaseAdapter(ABC):
     def __init__(
         self,
         model: WhisperWithPrompt,
-        reward_fn,
-        rl_optimizer,
+        reward_fn: object,
+        rl_optimizer: object,
         n_candidates: int = 4,
-        temp_range: tuple = (0.4, 0.6),
+        temp_range: tuple[float, float] = (0.4, 0.6),
         device: str = "cuda",
-    ):
+    ) -> None:
         self.model = model
         self.reward_fn = reward_fn
         self.rl_optimizer = rl_optimizer
@@ -37,10 +39,6 @@ class BaseAdapter(ABC):
             audio: raw waveform [T] (for reward computation)
 
         Returns:
-            dict with:
-                - text: final transcription
-                - baseline_text: transcription before adaptation
-                - rewards: reward values for candidates
-                - info: optimizer info dict
+            dict with text, baseline_text, rewards, info
         """
         ...

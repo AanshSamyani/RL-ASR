@@ -1,4 +1,6 @@
-"""Vanilla REINFORCE with mean baseline — reproduction of ASR-TRA."""
+"""Vanilla REINFORCE with mean baseline -- reproduction of ASR-TRA."""
+
+from __future__ import annotations
 
 import torch
 
@@ -14,10 +16,10 @@ class REINFORCE:
         self,
         base_lr: float = 1e-5,
         prompt_lr_scale: float = 100.0,
-    ):
+    ) -> None:
         self.base_lr = base_lr
         self.prompt_lr_scale = prompt_lr_scale
-        self.optimizer = None
+        self.optimizer: torch.optim.Adam | None = None
 
     def setup_optimizer(self, param_groups: list[dict]) -> None:
         """Initialize Adam optimizer with per-group learning rates."""
@@ -32,21 +34,12 @@ class REINFORCE:
         candidates: list[dict],
         rewards: torch.Tensor,
     ) -> torch.Tensor:
-        """Compute REINFORCE loss with mean baseline.
-
-        Args:
-            candidates: list of N dicts, each with 'total_log_prob'
-            rewards: tensor [N] of scalar rewards
-
-        Returns:
-            loss: scalar tensor
-        """
+        """Compute REINFORCE loss with mean baseline."""
         baseline = rewards.mean()
         advantages = rewards - baseline
 
         loss = torch.tensor(0.0, device=rewards.device, requires_grad=True)
         for i, cand in enumerate(candidates):
-            # total_log_prob is sum of per-token log probs
             loss = loss + (-advantages[i] * cand["total_log_prob"])
 
         return loss / len(candidates)
@@ -56,19 +49,14 @@ class REINFORCE:
         candidates: list[dict],
         rewards: torch.Tensor,
     ) -> dict:
-        """One REINFORCE update step.
-
-        Returns:
-            dict with loss value and advantage stats.
-        """
+        """One REINFORCE update step."""
         self.optimizer.zero_grad()
         loss = self.compute_loss(candidates, rewards)
         loss.backward()
         self.optimizer.step()
 
-        baseline = rewards.mean()
         return {
             "loss": loss.item(),
-            "mean_reward": baseline.item(),
+            "mean_reward": rewards.mean().item(),
             "reward_std": rewards.std().item(),
         }

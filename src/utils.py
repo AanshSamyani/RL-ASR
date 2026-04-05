@@ -1,5 +1,7 @@
 """Utilities: WER computation, logging, config loading."""
 
+from __future__ import annotations
+
 import json
 import os
 import time
@@ -16,7 +18,6 @@ def compute_wer(hypothesis: str, reference: str) -> float:
     if len(ref_words) == 0:
         return 0.0 if len(hyp_words) == 0 else float("inf")
 
-    # Dynamic programming for edit distance
     d = [[0] * (len(hyp_words) + 1) for _ in range(len(ref_words) + 1)]
     for i in range(len(ref_words) + 1):
         d[i][0] = i
@@ -29,9 +30,9 @@ def compute_wer(hypothesis: str, reference: str) -> float:
                 d[i][j] = d[i - 1][j - 1]
             else:
                 d[i][j] = min(
-                    d[i - 1][j] + 1,  # deletion
-                    d[i][j - 1] + 1,  # insertion
-                    d[i - 1][j - 1] + 1,  # substitution
+                    d[i - 1][j] + 1,
+                    d[i][j - 1] + 1,
+                    d[i - 1][j - 1] + 1,
                 )
 
     return d[len(ref_words)][len(hyp_words)] / len(ref_words)
@@ -62,14 +63,14 @@ class ExperimentLogger:
     experiment_name: str = "experiment"
     entries: list = field(default_factory=list)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         os.makedirs(self.log_dir, exist_ok=True)
 
-    def log(self, entry: dict):
+    def log(self, entry: dict) -> None:
         entry["timestamp"] = time.time()
         self.entries.append(entry)
 
-    def save(self):
+    def save(self) -> None:
         path = os.path.join(self.log_dir, f"{self.experiment_name}.json")
         with open(path, "w") as f:
             json.dump(self.entries, f, indent=2)

@@ -1,2 +1,4 @@
-from .single_sample import SingleSampleAdapter
-from .persistent import PersistentPromptAdapter
+from src.adaptation.persistent import PersistentPromptAdapter
+from src.adaptation.single_sample import SingleSampleAdapter
+
+__all__ = ["PersistentPromptAdapter", "SingleSampleAdapter"]

@@ -1,14 +1,15 @@
 """Whisper model wrapper with prompt injection and stochastic decoding."""
 
+from __future__ import annotations
+
 import copy
-from typing import Optional
 
 import torch
 import torch.nn.functional as F
 import whisper
-from whisper.decoding import DecodingOptions, DecodingResult
+from whisper.decoding import DecodingOptions
 
-from .prompt import LearnablePrompt
+from src.prompt import LearnablePrompt
 
 
 class WhisperWithPrompt(torch.nn.Module):
@@ -20,25 +21,25 @@ class WhisperWithPrompt(torch.nn.Module):
         model_name: str = "tiny",
         prompt_length: int = 4,
         device: str = "cuda",
-    ):
+    ) -> None:
         super().__init__()
         self.device = device
         self.model = whisper.load_model(model_name, device=device)
-        embed_dim = self.model.dims.n_text_state  # 384 for tiny, 512 for base
+        embed_dim = self.model.dims.n_text_state
         self.prompt = LearnablePrompt(length=prompt_length, embed_dim=embed_dim)
         self.prompt = self.prompt.to(device)
 
-        # Store original decoder weights for restoration
-        self._original_decoder_state = None
+        self._original_decoder_state: dict | None = None
+        self._original_prompt_state: torch.Tensor | None = None
 
-    def save_state(self):
+    def save_state(self) -> None:
         """Save model + prompt state for per-sample restoration."""
         self._original_decoder_state = copy.deepcopy(
             self.model.decoder.state_dict()
         )
         self._original_prompt_state = self.prompt.clone_state()
 
-    def restore_state(self):
+    def restore_state(self) -> None:
         """Restore model + prompt to saved state."""
         if self._original_decoder_state is not None:
             self.model.decoder.load_state_dict(self._original_decoder_state)
@@ -51,9 +52,14 @@ class WhisperWithPrompt(torch.nn.Module):
 
     def decode_greedy(self, audio_features: torch.Tensor) -> str:
         """Standard greedy decode (temperature=0) without prompt."""
+        inp = (
+            audio_features.squeeze(0)
+            if audio_features.dim() == 3
+            else audio_features
+        )
         result = whisper.decode(
             self.model,
-            audio_features.squeeze(0) if audio_features.dim() == 3 else audio_features,
+            inp,
             DecodingOptions(language="en", without_timestamps=True),
         )
         if isinstance(result, list):
@@ -68,56 +74,42 @@ class WhisperWithPrompt(torch.nn.Module):
     ) -> dict:
         """Decode with prompt injection and temperature sampling.
 
-        Returns dict with:
-            - text: decoded string
-            - tokens: token ids [T]
-            - log_probs: per-token log probabilities [T]
-            - total_log_prob: sum of log probs (scalar)
+        Returns dict with text, tokens, log_probs, and total_log_prob.
         """
         model = self.model
         prompt_emb = self.prompt()  # [1, L, D]
 
-        # Get SOT token embedding
         sot_token = torch.tensor(
             [[model.decoder.tokenizer.sot]], device=self.device
         )
         sot_emb = model.decoder.token_embedding(sot_token)  # [1, 1, D]
 
-        # Prepend prompt before SOT
-        decoder_input_emb = torch.cat([prompt_emb, sot_emb], dim=1)  # [1, L+1, D]
+        decoder_input_emb = torch.cat([prompt_emb, sot_emb], dim=1)
 
-        tokens = []
-        log_probs = []
+        tokens: list[int] = []
+        log_probs: list[float] = []
         all_tokens = [model.decoder.tokenizer.sot]
 
         for step in range(max_tokens):
-            # Build token embeddings for all generated tokens so far
             if step > 0:
                 prev_tokens = torch.tensor(
                     [all_tokens[1:]], device=self.device
-                )  # exclude SOT already in emb
+                )
                 prev_emb = model.decoder.token_embedding(prev_tokens)
                 current_emb = torch.cat([decoder_input_emb, prev_emb], dim=1)
             else:
                 current_emb = decoder_input_emb
 
-            # Add positional encoding - need to handle the prompt offset
-            positions = torch.arange(
-                current_emb.shape[1], device=self.device
-            )
+            positions = torch.arange(current_emb.shape[1], device=self.device)
             pos_emb = model.decoder.positional_embedding[positions]
             x = current_emb + pos_emb
 
-            # Run through decoder transformer blocks
             for block in model.decoder.blocks:
                 x = block(x, audio_features, mask=model.decoder.mask)
 
             x = model.decoder.ln(x)
-            logits = (
-                x[:, -1, :] @ model.decoder.token_embedding.weight.T
-            )  # [1, vocab]
+            logits = x[:, -1, :] @ model.decoder.token_embedding.weight.T
 
-            # Temperature-controlled sampling
             if temperature > 0:
                 probs = F.softmax(logits / temperature, dim=-1)
                 next_token = torch.multinomial(probs, 1).squeeze(-1)
@@ -125,12 +117,9 @@ class WhisperWithPrompt(torch.nn.Module):
                 next_token = logits.argmax(dim=-1)
 
             token_id = next_token.item()
-
-            # Compute log prob of chosen token
-            log_prob = F.log_softmax(logits, dim=-1)  # use unscaled for RL
+            log_prob = F.log_softmax(logits, dim=-1)
             token_log_prob = log_prob[0, token_id].item()
 
-            # Check for EOT
             if token_id == model.decoder.tokenizer.eot:
                 break
 
@@ -152,7 +141,7 @@ class WhisperWithPrompt(torch.nn.Module):
         self,
         audio_features: torch.Tensor,
         n_candidates: int = 4,
-        temp_range: tuple = (0.4, 0.6),
+        temp_range: tuple[float, float] = (0.4, 0.6),
         max_tokens: int = 224,
     ) -> list[dict]:
         """Generate multiple stochastic transcription candidates."""
@@ -170,7 +159,7 @@ class WhisperWithPrompt(torch.nn.Module):
         self, finetune_decoder: bool = True
     ) -> list[dict]:
         """Return parameter groups with appropriate learning rates."""
-        param_groups = [
+        param_groups: list[dict] = [
             {"params": [self.prompt.prompt], "lr_scale": 100.0},
         ]
         if finetune_decoder:

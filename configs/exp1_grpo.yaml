@@ -1,4 +1,4 @@
-# Experiment 1: GRPO with token-level advantages
+# Experiment 1: GRPO vs REINFORCE
 # Tests whether GRPO improves over REINFORCE for ASR-TTA
 
 experiment:
@@ -15,7 +15,6 @@ decoding:
   temp_range: [0.4, 0.6]
   max_tokens: 224
 
-# Ablation: test both REINFORCE and GRPO
 rl:
   methods:
     - name: "reinforce"
@@ -44,18 +43,19 @@ rl:
       token_level: true
 
 reward:
-  type: "clap"  # Use CLAP only to isolate RL algorithm effect
+  type: "clap"  # CLAP only to isolate RL algorithm effect
 
 adaptation:
-  type: "single_sample"  # Per-sample to match ASR-TRA
+  type: "single_sample"
 
 data:
   root: "data"
-  max_samples: 200         # Quick experiment: 200 samples
+  max_samples: 200
   snr_db: 10.0
-  datasets:
-    - "librispeech_noisy"
-    - "l2arctic"
+  noise_types:
+    - "gaussian_white"
+    - "gaussian_pink"
+    - "gaussian_brown"
 
 logging:
   results_dir: "results/exp1_grpo"

@@ -13,6 +13,10 @@ data:
   root: "data"
   max_samples: null         # null = use all samples
   snr_db: 10.0              # noise SNR for LibriSpeech
+  noise_types:              # gaussian noise (no extra downloads)
+    - "gaussian_white"
+    - "gaussian_pink"
+    - "gaussian_brown"
 
 logging:
   results_dir: "results"

@@ -11,49 +11,54 @@ Ablations:
   D) GRPO token-level with high KL penalty
 """
 
+from __future__ import annotations
+
 import argparse
-import os
 import sys
 import time
+from pathlib import Path
 
 import torch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.whisper_wrapper import WhisperWithPrompt
-from src.rewards.clap_reward import CLAPReward
-from src.rl.reinforce import REINFORCE
-from src.rl.grpo import GRPO
 from src.adaptation.single_sample import SingleSampleAdapter
-from src.data.librispeech_noisy import NoisyLibriSpeechDataset, NOISE_TYPES
-from src.data.l2arctic import L2ArcticDataset, L1_SPEAKERS
-from src.utils import compute_wer, ExperimentLogger, load_config
+from src.data.librispeech_noisy import NoisyLibriSpeechDataset
+from src.rewards.clap_reward import CLAPReward
+from src.rl.grpo import GRPO
+from src.rl.reinforce import REINFORCE
+from src.utils import ExperimentLogger, compute_wer, load_config
+from src.whisper_wrapper import WhisperWithPrompt
 
 
-def create_rl_optimizer(method_cfg: dict):
+def create_rl_optimizer(method_cfg: dict) -> REINFORCE | GRPO:
     """Create RL optimizer from config."""
     name = method_cfg["name"]
     if name == "reinforce":
-        rl = REINFORCE(
+        return REINFORCE(
             base_lr=method_cfg.get("base_lr", 1e-5),
             prompt_lr_scale=method_cfg.get("prompt_lr_scale", 100.0),
         )
-    else:  # grpo variants
-        rl = GRPO(
-            base_lr=method_cfg.get("base_lr", 1e-5),
-            prompt_lr_scale=method_cfg.get("prompt_lr_scale", 100.0),
-            clip_eps=method_cfg.get("clip_eps", 0.2),
-            kl_coeff=method_cfg.get("kl_coeff", 0.01),
-            token_level=method_cfg.get("token_level", False),
-        )
-    return rl
+    return GRPO(
+        base_lr=method_cfg.get("base_lr", 1e-5),
+        prompt_lr_scale=method_cfg.get("prompt_lr_scale", 100.0),
+        clip_eps=method_cfg.get("clip_eps", 0.2),
+        kl_coeff=method_cfg.get("kl_coeff", 0.01),
+        token_level=method_cfg.get("token_level", False),
+    )
 
 
-def run_method_on_dataset(method_cfg, model, reward_fn, dataset, cfg, device):
-    """Run one RL method on one dataset, return results."""
+def run_method_on_dataset(
+    method_cfg: dict,
+    model: WhisperWithPrompt,
+    reward_fn: CLAPReward,
+    dataset: NoisyLibriSpeechDataset,
+    cfg: dict,
+    device: str,
+) -> list[dict]:
+    """Run one RL method on one dataset."""
     method_name = method_cfg["name"]
 
-    # Create fresh RL optimizer (resets optimizer state)
     rl = create_rl_optimizer(method_cfg)
     rl.setup_optimizer(model.get_trainable_params())
 
@@ -68,32 +73,24 @@ def run_method_on_dataset(method_cfg, model, reward_fn, dataset, cfg, device):
 
     logger = ExperimentLogger(
         log_dir=cfg["logging"]["results_dir"],
-        experiment_name=f"{method_name}_{dataset.name if hasattr(dataset, 'name') else 'data'}",
+        experiment_name=f"{method_name}_{dataset.noise_type or 'mixed'}",
     )
 
-    results = []
+    results: list[dict] = []
     for i in range(len(dataset)):
         sample = dataset[i]
         t0 = time.time()
         output = adapter.adapt_and_decode(mel=sample["mel"], audio=sample["audio"])
         latency = time.time() - t0
 
-        wer_before = compute_wer(output["baseline_text"], sample["text"])
-        wer_after = compute_wer(output["text"], sample["text"])
-
         entry = {
             "id": sample["id"],
-            "wer_before": wer_before,
-            "wer": wer_after,
+            "wer_before": compute_wer(output["baseline_text"], sample["text"]),
+            "wer": compute_wer(output["text"], sample["text"]),
             "latency": latency,
             "method": method_name,
+            "noise_type": sample.get("noise_type", "unknown"),
         }
-        if "noise_type" in sample:
-            entry["noise_type"] = sample["noise_type"]
-        if "l1_background" in sample:
-            entry["l1_background"] = sample["l1_background"]
-
-        # Add GRPO-specific diagnostics
         if "kl_loss" in output.get("info", {}):
             entry["kl_loss"] = output["info"]["kl_loss"]
             entry["pg_loss"] = output["info"]["pg_loss"]
@@ -105,7 +102,7 @@ def run_method_on_dataset(method_cfg, model, reward_fn, dataset, cfg, device):
     return results
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Exp 1: GRPO vs REINFORCE")
     parser.add_argument("--config", default="configs/exp1_grpo.yaml")
     parser.add_argument("--device", default="cuda")
@@ -122,7 +119,6 @@ def main():
     print("Experiment 1: GRPO vs REINFORCE for ASR-TTA")
     print("=" * 60)
 
-    # Initialize model and reward (shared across methods)
     model = WhisperWithPrompt(
         model_name=cfg["model"]["name"],
         prompt_length=cfg["model"]["prompt_length"],
@@ -130,73 +126,59 @@ def main():
     )
     reward_fn = CLAPReward(device=device)
 
-    # Prepare datasets
-    datasets = []
-    for ds_name in cfg["data"]["datasets"]:
-        if ds_name == "librispeech_noisy":
-            for noise in NOISE_TYPES[:3]:  # Quick: first 3 noise types
-                ds = NoisyLibriSpeechDataset(
-                    data_root=cfg["data"]["root"],
-                    snr_db=cfg["data"]["snr_db"],
-                    noise_type=noise,
-                    max_samples=cfg["data"]["max_samples"],
-                )
-                ds.name = f"librispeech_{noise}"
-                if len(ds) > 0:
-                    datasets.append(ds)
-        elif ds_name == "l2arctic":
-            for l1 in ["arabic", "mandarin", "vietnamese"]:  # Quick: 3 accents
-                ds = L2ArcticDataset(
-                    data_root=cfg["data"]["root"],
-                    l1_background=l1,
-                    max_samples=cfg["data"]["max_samples"],
-                )
-                ds.name = f"l2arctic_{l1}"
-                if len(ds) > 0:
-                    datasets.append(ds)
+    # Build datasets -- one per noise type for richer comparison
+    noise_types = cfg["data"].get("noise_types", ["gaussian_white", "gaussian_pink", "gaussian_brown"])
+    datasets: list[NoisyLibriSpeechDataset] = []
+    for noise in noise_types:
+        ds = NoisyLibriSpeechDataset(
+            data_root=cfg["data"]["root"],
+            snr_db=cfg["data"]["snr_db"],
+            noise_type=noise,
+            max_samples=cfg["data"]["max_samples"],
+        )
+        if len(ds) > 0:
+            datasets.append(ds)
 
     if not datasets:
-        print("No datasets found. Please run scripts/setup_data.sh first.")
+        print("No datasets found. Run: bash scripts/setup_data.sh")
         return
 
-    # Run each method on each dataset
-    all_results = {}
+    all_results: dict[str, list[dict]] = {}
     for method_cfg in cfg["rl"]["methods"]:
         method_name = method_cfg["name"]
         print(f"\n{'='*40}")
         print(f"Method: {method_name}")
         print(f"{'='*40}")
 
-        method_results = []
+        method_results: list[dict] = []
         for dataset in datasets:
-            print(f"\n  Dataset: {dataset.name} ({len(dataset)} samples)")
+            print(f"\n  Noise: {dataset.noise_type or 'mixed'} ({len(dataset)} samples)")
             results = run_method_on_dataset(
                 method_cfg, model, reward_fn, dataset, cfg, device
             )
             avg_wer = sum(r["wer"] for r in results) / len(results)
-            avg_wer_before = sum(r["wer_before"] for r in results) / len(results)
-            avg_latency = sum(r["latency"] for r in results) / len(results)
+            avg_before = sum(r["wer_before"] for r in results) / len(results)
+            avg_lat = sum(r["latency"] for r in results) / len(results)
             print(
-                f"  WER: {avg_wer_before:.4f} -> {avg_wer:.4f} "
-                f"(delta: {avg_wer - avg_wer_before:+.4f}) "
-                f"Latency: {avg_latency:.3f}s"
+                f"  WER: {avg_before:.4f} -> {avg_wer:.4f} "
+                f"(delta: {avg_wer - avg_before:+.4f}) "
+                f"Latency: {avg_lat:.3f}s"
             )
             method_results.extend(results)
 
         all_results[method_name] = method_results
 
-    # Summary comparison
     print("\n" + "=" * 60)
-    print("SUMMARY: Mean WER across all datasets")
+    print("SUMMARY: Mean WER across all noise types")
     print("=" * 60)
     for method_name, results in all_results.items():
         avg_wer = sum(r["wer"] for r in results) / len(results)
-        avg_wer_before = sum(r["wer_before"] for r in results) / len(results)
-        avg_latency = sum(r["latency"] for r in results) / len(results)
+        avg_before = sum(r["wer_before"] for r in results) / len(results)
+        avg_lat = sum(r["latency"] for r in results) / len(results)
         print(
             f"  {method_name:25s}  "
-            f"WER: {avg_wer:.4f} (from {avg_wer_before:.4f})  "
-            f"Latency: {avg_latency:.3f}s"
+            f"WER: {avg_wer:.4f} (from {avg_before:.4f})  "
+            f"Latency: {avg_lat:.3f}s"
         )
 
 

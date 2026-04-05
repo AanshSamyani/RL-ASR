@@ -1,23 +1,22 @@
 """Language model perplexity reward using GPT-2 small.
 
-Key insight: GPT-2 small (124M params) provides a fast linguistic fluency signal.
-Unlike the full LLM reward in ASR-TRA (which adds 7-9x latency), GPT-2 small
-runs in ~10ms per candidate, adding negligible overhead.
+GPT-2 small (124M params) provides a fast linguistic fluency signal (~10ms/candidate).
+Unlike the full LLM reward in ASR-TRA (7-9x latency), this adds negligible overhead.
 """
 
+from __future__ import annotations
+
 import torch
-import torch.nn.functional as F
 from transformers import GPT2LMHeadModel, GPT2TokenizerFast
 
 
 class LMPerplexityReward:
     """Computes normalized negative perplexity as a fluency reward.
 
-    Lower perplexity = more fluent text = higher reward.
-    We negate and normalize so higher reward = better.
+    Lower perplexity = more fluent = higher reward.
     """
 
-    def __init__(self, model_name: str = "gpt2", device: str = "cuda"):
+    def __init__(self, model_name: str = "gpt2", device: str = "cuda") -> None:
         self.device = device
         self.tokenizer = GPT2TokenizerFast.from_pretrained(model_name)
         self.model = GPT2LMHeadModel.from_pretrained(model_name).to(device)
@@ -31,7 +30,7 @@ class LMPerplexityReward:
             texts: list of N transcription candidates
 
         Returns:
-            rewards: tensor [N] — higher = more fluent
+            rewards: tensor [N] -- higher = more fluent
         """
         rewards = []
         for text in texts:
@@ -45,8 +44,7 @@ class LMPerplexityReward:
             input_ids = inputs["input_ids"]
 
             outputs = self.model(**inputs, labels=input_ids)
-            # outputs.loss is mean cross-entropy = log(perplexity)
-            neg_log_ppl = -outputs.loss  # higher = better
+            neg_log_ppl = -outputs.loss
             rewards.append(neg_log_ppl)
 
         return torch.stack(rewards)

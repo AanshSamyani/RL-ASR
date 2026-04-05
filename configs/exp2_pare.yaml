@@ -1,4 +1,4 @@
-# Experiment 2: PARE — Phoneme-Aware Reward Ensemble
+# Experiment 2: PARE -- Phoneme-Aware Reward Ensemble
 # Tests whether multi-signal reward outperforms CLAP-only
 
 experiment:
@@ -16,11 +16,10 @@ decoding:
   max_tokens: 224
 
 rl:
-  method: "reinforce"       # Fix RL method to isolate reward effect
+  method: "reinforce"
   base_lr: 1.0e-5
   prompt_lr_scale: 100.0
 
-# Ablation: test different reward configurations
 reward:
   configurations:
     - name: "clap_only"
@@ -65,9 +64,10 @@ data:
   root: "data"
   max_samples: 200
   snr_db: 10.0
-  datasets:
-    - "librispeech_noisy"
-    - "l2arctic"
+  noise_types:
+    - "gaussian_white"
+    - "gaussian_pink"
+    - "gaussian_brown"
 
 logging:
   results_dir: "results/exp2_pare"
