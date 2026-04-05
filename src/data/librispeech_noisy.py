@@ -10,12 +10,21 @@ from __future__ import annotations
 import random
 from pathlib import Path
 
+import numpy as np
+import soundfile as sf
 import torch
-import torchaudio
+import torch.nn.functional as F
 import whisper
 
-# Use soundfile backend to avoid torchcodec/FFmpeg dependency
-torchaudio.set_audio_backend("soundfile")
+
+def _resample(waveform: torch.Tensor, orig_sr: int, target_sr: int) -> torch.Tensor:
+    """Resample 1-D waveform via linear interpolation."""
+    if orig_sr == target_sr:
+        return waveform
+    new_len = int(len(waveform) * target_sr / orig_sr)
+    return F.interpolate(
+        waveform.unsqueeze(0).unsqueeze(0), size=new_len, mode="linear", align_corners=False
+    ).squeeze()
 from torch.utils.data import Dataset
 
 NOISE_TYPES_GAUSSIAN = [
@@ -88,10 +97,13 @@ class NoisyLibriSpeechDataset(Dataset):
                 for ntype in NOISE_TYPES_SNSD:
                     noise_path = noise_root / f"{ntype}.wav"
                     if noise_path.exists():
-                        waveform, sr = torchaudio.load(str(noise_path))
+                        data, sr = sf.read(str(noise_path), dtype="float32")
+                        waveform = torch.from_numpy(data)
+                        if waveform.dim() > 1:
+                            waveform = waveform[:, 0]
                         if sr != 16000:
-                            waveform = torchaudio.functional.resample(waveform, sr, 16000)
-                        self.snsd_noise_files[ntype] = waveform[0]
+                            waveform = _resample(waveform, sr, 16000)
+                        self.snsd_noise_files[ntype] = waveform
             if not self.snsd_noise_files:
                 print("Warning: MS-SNSD not found, falling back to Gaussian noise.")
                 self.noise_source = "gaussian"
@@ -162,11 +174,13 @@ class NoisyLibriSpeechDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict:
         sample = self.samples[idx]
-        waveform, sr = torchaudio.load(sample["audio_path"])
-        waveform = waveform[0]
+        data, sr = sf.read(sample["audio_path"], dtype="float32")
+        waveform = torch.from_numpy(data)
+        if waveform.dim() > 1:
+            waveform = waveform[:, 0]
 
         if sr != 16000:
-            waveform = torchaudio.functional.resample(waveform, sr, 16000)
+            waveform = _resample(waveform, sr, 16000)
 
         noise_type = self.noise_type or random.choice(self.available_noise_types)
         waveform_noisy = self._add_noise(waveform, noise_type)
