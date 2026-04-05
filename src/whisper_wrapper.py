@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 import whisper
 from whisper.decoding import DecodingOptions
+from whisper.tokenizer import get_tokenizer
 
 from src.prompt import LearnablePrompt
 
@@ -25,6 +26,7 @@ class WhisperWithPrompt(torch.nn.Module):
         super().__init__()
         self.device = device
         self.model = whisper.load_model(model_name, device=device)
+        self.tokenizer = get_tokenizer(self.model.is_multilingual)
         embed_dim = self.model.dims.n_text_state
         self.prompt = LearnablePrompt(length=prompt_length, embed_dim=embed_dim)
         self.prompt = self.prompt.to(device)
@@ -80,7 +82,7 @@ class WhisperWithPrompt(torch.nn.Module):
         prompt_emb = self.prompt()  # [1, L, D]
 
         sot_token = torch.tensor(
-            [[model.decoder.tokenizer.sot]], device=self.device
+            [[self.tokenizer.sot]], device=self.device
         )
         sot_emb = model.decoder.token_embedding(sot_token)  # [1, 1, D]
 
@@ -88,7 +90,7 @@ class WhisperWithPrompt(torch.nn.Module):
 
         tokens: list[int] = []
         log_probs: list[float] = []
-        all_tokens = [model.decoder.tokenizer.sot]
+        all_tokens = [self.tokenizer.sot]
 
         for step in range(max_tokens):
             if step > 0:
@@ -120,14 +122,14 @@ class WhisperWithPrompt(torch.nn.Module):
             log_prob = F.log_softmax(logits, dim=-1)
             token_log_prob = log_prob[0, token_id].item()
 
-            if token_id == model.decoder.tokenizer.eot:
+            if token_id == self.tokenizer.eot:
                 break
 
             tokens.append(token_id)
             log_probs.append(token_log_prob)
             all_tokens.append(token_id)
 
-        text = model.decoder.tokenizer.decode(tokens)
+        text = self.tokenizer.decode(tokens)
         log_probs_tensor = torch.tensor(log_probs, device=self.device)
 
         return {
