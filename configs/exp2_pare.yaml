@@ -1,0 +1,74 @@
+# Experiment 2: PARE — Phoneme-Aware Reward Ensemble
+# Tests whether multi-signal reward outperforms CLAP-only
+
+experiment:
+  name: "exp2_pare"
+  description: "Multi-signal reward ensemble vs CLAP-only"
+
+model:
+  name: "tiny"
+  prompt_length: 4
+  device: "cuda"
+
+decoding:
+  n_candidates: 4
+  temp_range: [0.4, 0.6]
+  max_tokens: 224
+
+rl:
+  method: "reinforce"       # Fix RL method to isolate reward effect
+  base_lr: 1.0e-5
+  prompt_lr_scale: 100.0
+
+# Ablation: test different reward configurations
+reward:
+  configurations:
+    - name: "clap_only"
+      use_clap: true
+      use_lm: false
+      use_consistency: false
+
+    - name: "clap_lm"
+      use_clap: true
+      use_lm: true
+      use_consistency: false
+      clap_weight: 0.6
+      lm_weight: 0.4
+
+    - name: "clap_consistency"
+      use_clap: true
+      use_lm: false
+      use_consistency: true
+      clap_weight: 0.7
+      consistency_weight: 0.3
+
+    - name: "pare_full"
+      use_clap: true
+      use_lm: true
+      use_consistency: true
+      clap_weight: 0.5
+      lm_weight: 0.3
+      consistency_weight: 0.2
+
+    - name: "pare_lm_heavy"
+      use_clap: true
+      use_lm: true
+      use_consistency: true
+      clap_weight: 0.3
+      lm_weight: 0.5
+      consistency_weight: 0.2
+
+adaptation:
+  type: "single_sample"
+
+data:
+  root: "data"
+  max_samples: 200
+  snr_db: 10.0
+  datasets:
+    - "librispeech_noisy"
+    - "l2arctic"
+
+logging:
+  results_dir: "results/exp2_pare"
+  verbose: true

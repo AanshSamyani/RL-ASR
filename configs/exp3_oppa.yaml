@@ -1,0 +1,64 @@
+# Experiment 3: OPPA — Online Persistent Prompt Adaptation
+# Tests whether accumulating prompt knowledge across samples helps
+
+experiment:
+  name: "exp3_oppa"
+  description: "Persistent vs single-sample prompt adaptation"
+
+model:
+  name: "tiny"
+  prompt_length: 4
+  device: "cuda"
+
+decoding:
+  n_candidates: 4
+  temp_range: [0.4, 0.6]
+  max_tokens: 224
+
+rl:
+  method: "reinforce"
+  base_lr: 1.0e-5
+  prompt_lr_scale: 100.0
+
+reward:
+  type: "clap"
+
+# Ablation: test different persistence strategies
+adaptation:
+  configurations:
+    - name: "single_sample"
+      type: "single_sample"
+
+    - name: "persistent_ema09"
+      type: "persistent"
+      ema_decay: 0.9
+      warmup_samples: 5
+      warmup_decay: 0.5
+      use_domain_grouping: false
+
+    - name: "persistent_ema07"
+      type: "persistent"
+      ema_decay: 0.7
+      warmup_samples: 5
+      warmup_decay: 0.3
+      use_domain_grouping: false
+
+    - name: "persistent_domain"
+      type: "persistent"
+      ema_decay: 0.9
+      warmup_samples: 3
+      warmup_decay: 0.5
+      use_domain_grouping: true
+
+data:
+  root: "data"
+  max_samples: 200
+  snr_db: 10.0
+  # Group by noise type/speaker to test domain persistence
+  datasets:
+    - "librispeech_noisy"   # grouped by noise type
+    - "l2arctic"            # grouped by L1 background
+
+logging:
+  results_dir: "results/exp3_oppa"
+  verbose: true

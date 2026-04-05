@@ -1,0 +1,19 @@
+# Base configuration shared across all experiments
+model:
+  name: "tiny"              # whisper model size: tiny (39M), base (74M)
+  prompt_length: 4          # number of soft prompt tokens
+  device: "cuda"
+
+decoding:
+  n_candidates: 4           # number of stochastic candidates
+  temp_range: [0.4, 0.6]    # temperature sampling range
+  max_tokens: 224           # max decoding length
+
+data:
+  root: "data"
+  max_samples: null         # null = use all samples
+  snr_db: 10.0              # noise SNR for LibriSpeech
+
+logging:
+  results_dir: "results"
+  verbose: true
