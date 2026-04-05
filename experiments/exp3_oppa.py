@@ -13,10 +13,15 @@ Ablations:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from collections import defaultdict
 from pathlib import Path
+
+# Set GPU before torch import
+if "--gpu" in sys.argv:
+    os.environ["CUDA_VISIBLE_DEVICES"] = sys.argv[sys.argv.index("--gpu") + 1]
 
 import torch
 
@@ -140,6 +145,7 @@ def main() -> None:
     parser.add_argument("--config", default="configs/exp3_oppa.yaml")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--max-samples", type=int, default=None)
+    parser.add_argument("--gpu", type=str, default=None, help="GPU id (e.g. 0, 1, 2, 3)")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
