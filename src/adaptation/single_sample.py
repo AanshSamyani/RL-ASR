@@ -10,8 +10,8 @@ from src.adaptation.base import BaseAdapter
 class SingleSampleAdapter(BaseAdapter):
     """Per-sample TTA: adapt, decode, then restore all parameters.
 
-    Safety mechanism: picks the best output among {baseline, candidates,
-    adapted} by reward score, so adaptation can never degrade below baseline.
+    Safety: defaults to baseline. Only uses adapted output if it has
+    higher reward than baseline (conservative selection).
     """
 
     def adapt_and_decode(
@@ -50,18 +50,24 @@ class SingleSampleAdapter(BaseAdapter):
         # Final decode with adapted prompt + decoder
         adapted_text = self.model.decode_greedy_with_prompt(audio_features)
 
-        # Safety: pick best among baseline, best candidate, and adapted output
-        all_texts = [baseline_text, adapted_text] + candidate_texts
-        all_reward_result = self.reward_fn(audio, all_texts)
-        all_rewards = (
-            all_reward_result["reward"]
-            if isinstance(all_reward_result, dict)
-            else all_reward_result
+        # Score baseline vs adapted
+        comparison = self.reward_fn(audio, [baseline_text, adapted_text])
+        comp_rewards = (
+            comparison["reward"] if isinstance(comparison, dict) else comparison
         )
-        best_idx = all_rewards.argmax().item()
-        final_text = all_texts[best_idx]
+        baseline_reward = comp_rewards[0].item()
+        adapted_reward = comp_rewards[1].item()
 
-        info["selected"] = ["baseline", "adapted", *[f"cand_{i}" for i in range(len(candidate_texts))]][best_idx]
+        # Conservative: keep baseline unless adapted is strictly better
+        if adapted_reward > baseline_reward:
+            final_text = adapted_text
+            info["selected"] = "adapted"
+        else:
+            final_text = baseline_text
+            info["selected"] = "baseline"
+
+        info["baseline_reward"] = baseline_reward
+        info["adapted_reward"] = adapted_reward
 
         # Restore parameters
         self.model.restore_state()

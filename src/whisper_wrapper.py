@@ -28,6 +28,7 @@ class WhisperWithPrompt(torch.nn.Module):
         self.model = whisper.load_model(model_name, device=device)
         self.tokenizer = get_tokenizer(self.model.is_multilingual)
         embed_dim = self.model.dims.n_text_state
+        self.prompt_length = prompt_length
         self.prompt = LearnablePrompt(length=prompt_length, embed_dim=embed_dim)
         self.prompt = self.prompt.to(device)
 
@@ -68,51 +69,58 @@ class WhisperWithPrompt(torch.nn.Module):
             return result[0].text
         return result.text
 
+    def _build_decoder_input(
+        self, all_token_ids: list[int], prompt_emb: torch.Tensor
+    ) -> torch.Tensor:
+        """Build decoder input: prompt (no pos emb) + tokens (with pos emb).
+
+        The prompt tokens are position-free — they act as content-only context.
+        Real tokens (SOT + generated) get positional embeddings starting at 0,
+        preserving Whisper's trained positional expectations.
+        """
+        model = self.model
+        token_ids = torch.tensor([all_token_ids], device=self.device)
+        token_emb = model.decoder.token_embedding(token_ids)  # [1, T, D]
+
+        # Add positional embeddings only to real tokens (0-indexed)
+        n_tokens = token_emb.shape[1]
+        positions = torch.arange(n_tokens, device=self.device)
+        token_emb = token_emb + model.decoder.positional_embedding[positions]
+
+        # Prompt has no positional embedding — concat before tokens
+        return torch.cat([prompt_emb, token_emb], dim=1)  # [1, L+T, D]
+
+    def _run_decoder(
+        self, x: torch.Tensor, audio_features: torch.Tensor
+    ) -> torch.Tensor:
+        """Run through decoder blocks + layernorm → logits."""
+        model = self.model
+        for block in model.blocks if hasattr(model, "blocks") else model.decoder.blocks:
+            x = block(x, audio_features, mask=model.decoder.mask)
+        x = model.decoder.ln(x)
+        return x[:, -1, :] @ model.decoder.token_embedding.weight.T
+
     @torch.no_grad()
     def decode_greedy_with_prompt(self, audio_features: torch.Tensor) -> str:
         """Greedy decode (temperature=0) WITH prompt injection.
 
-        This is the final decode in Algorithm 1 step 9: y ← Whisper(s; θ, p).
-        Uses the adapted prompt + decoder for inference.
+        Algorithm 1 step 9: y ← Whisper(s; θ, p).
         """
-        model = self.model
-        prompt_emb = self.prompt()
-
-        sot_token = torch.tensor(
-            [[self.tokenizer.sot]], device=self.device
-        )
-        sot_emb = model.decoder.token_embedding(sot_token)
-        decoder_input_emb = torch.cat([prompt_emb, sot_emb], dim=1)
+        prompt_emb = self.prompt()  # [1, L, D]
 
         tokens: list[int] = []
-        all_tokens = [self.tokenizer.sot]
+        all_token_ids = [self.tokenizer.sot]
 
-        for step in range(224):
-            if step > 0:
-                prev_tokens = torch.tensor(
-                    [all_tokens[1:]], device=self.device
-                )
-                prev_emb = model.decoder.token_embedding(prev_tokens)
-                current_emb = torch.cat([decoder_input_emb, prev_emb], dim=1)
-            else:
-                current_emb = decoder_input_emb
-
-            positions = torch.arange(current_emb.shape[1], device=self.device)
-            pos_emb = model.decoder.positional_embedding[positions]
-            x = current_emb + pos_emb
-
-            for block in model.decoder.blocks:
-                x = block(x, audio_features, mask=model.decoder.mask)
-
-            x = model.decoder.ln(x)
-            logits = x[:, -1, :] @ model.decoder.token_embedding.weight.T
+        for _ in range(224):
+            x = self._build_decoder_input(all_token_ids, prompt_emb)
+            logits = self._run_decoder(x, audio_features)
             token_id = logits.argmax(dim=-1).item()
 
             if token_id == self.tokenizer.eot:
                 break
 
             tokens.append(token_id)
-            all_tokens.append(token_id)
+            all_token_ids.append(token_id)
 
         return self.tokenizer.decode(tokens).strip()
 
@@ -126,39 +134,15 @@ class WhisperWithPrompt(torch.nn.Module):
 
         Returns dict with text, tokens, log_probs, and total_log_prob.
         """
-        model = self.model
         prompt_emb = self.prompt()  # [1, L, D]
 
-        sot_token = torch.tensor(
-            [[self.tokenizer.sot]], device=self.device
-        )
-        sot_emb = model.decoder.token_embedding(sot_token)  # [1, 1, D]
-
-        decoder_input_emb = torch.cat([prompt_emb, sot_emb], dim=1)
-
         tokens: list[int] = []
-        log_probs: list[torch.Tensor] = []  # keep as tensors for grad
-        all_tokens = [self.tokenizer.sot]
+        log_probs: list[torch.Tensor] = []
+        all_token_ids = [self.tokenizer.sot]
 
-        for step in range(max_tokens):
-            if step > 0:
-                prev_tokens = torch.tensor(
-                    [all_tokens[1:]], device=self.device
-                )
-                prev_emb = model.decoder.token_embedding(prev_tokens)
-                current_emb = torch.cat([decoder_input_emb, prev_emb], dim=1)
-            else:
-                current_emb = decoder_input_emb
-
-            positions = torch.arange(current_emb.shape[1], device=self.device)
-            pos_emb = model.decoder.positional_embedding[positions]
-            x = current_emb + pos_emb
-
-            for block in model.decoder.blocks:
-                x = block(x, audio_features, mask=model.decoder.mask)
-
-            x = model.decoder.ln(x)
-            logits = x[:, -1, :] @ model.decoder.token_embedding.weight.T
+        for _ in range(max_tokens):
+            x = self._build_decoder_input(all_token_ids, prompt_emb)
+            logits = self._run_decoder(x, audio_features)
 
             if temperature > 0:
                 probs = F.softmax(logits / temperature, dim=-1)
@@ -168,21 +152,21 @@ class WhisperWithPrompt(torch.nn.Module):
 
             token_id = next_token.item()
 
-            # Keep log prob as a tensor WITH gradient for RL
+            # Keep log prob in graph for RL gradients
             log_prob = F.log_softmax(logits, dim=-1)
-            token_log_prob = log_prob[0, token_id]  # stays in graph
+            token_log_prob = log_prob[0, token_id]
 
             if token_id == self.tokenizer.eot:
                 break
 
             tokens.append(token_id)
             log_probs.append(token_log_prob)
-            all_tokens.append(token_id)
+            all_token_ids.append(token_id)
 
         text = self.tokenizer.decode(tokens)
 
         if log_probs:
-            log_probs_tensor = torch.stack(log_probs)  # preserves grad
+            log_probs_tensor = torch.stack(log_probs)
         else:
             log_probs_tensor = torch.zeros(1, device=self.device, requires_grad=True)
 

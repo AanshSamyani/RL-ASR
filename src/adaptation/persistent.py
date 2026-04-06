@@ -139,20 +139,22 @@ class PersistentPromptAdapter(BaseAdapter):
         # Final decode with updated parameters + prompt
         adapted_text = self.model.decode_greedy_with_prompt(audio_features)
 
-        # Safety: pick best among baseline, adapted, and candidates
-        all_texts = [baseline_text, adapted_text] + candidate_texts
-        all_reward_result = self.reward_fn(audio, all_texts)
-        all_rewards = (
-            all_reward_result["reward"]
-            if isinstance(all_reward_result, dict)
-            else all_reward_result
+        # Score baseline vs adapted
+        comparison = self.reward_fn(audio, [baseline_text, adapted_text])
+        comp_rewards = (
+            comparison["reward"] if isinstance(comparison, dict) else comparison
         )
-        best_idx = all_rewards.argmax().item()
-        final_text = all_texts[best_idx]
-
-        # Measure adapted vs baseline reward for EMA decision
-        adapted_reward = all_rewards[1].item()
+        adapted_reward = comp_rewards[1].item()
         reward_improvement = adapted_reward - baseline_reward
+
+        # Conservative: keep baseline unless adapted is better
+        if adapted_reward > baseline_reward:
+            final_text = adapted_text
+            info["selected"] = "adapted"
+        else:
+            final_text = baseline_text
+            info["selected"] = "baseline"
+
         self._update_ema(adapted_prompt, reward_improvement, domain=domain)
 
         # Restore decoder weights
@@ -161,7 +163,6 @@ class PersistentPromptAdapter(BaseAdapter):
         info["reward_improvement"] = reward_improvement
         info["ema_updated"] = reward_improvement > 0
         info["sample_count"] = self._sample_count
-        info["selected"] = ["baseline", "adapted", *[f"cand_{i}" for i in range(len(candidate_texts))]][best_idx]
 
         return {
             "text": final_text,
