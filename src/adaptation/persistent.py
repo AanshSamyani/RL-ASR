@@ -136,8 +136,8 @@ class PersistentPromptAdapter(BaseAdapter):
         # Snapshot adapted prompt before restoration
         adapted_prompt = self.model.prompt.clone_state()
 
-        # Final decode
-        final_text = self.model.decode_greedy(audio_features)
+        # Final decode with updated parameters + prompt
+        final_text = self.model.decode_greedy_with_prompt(audio_features)
 
         # Measure improvement
         final_reward_result = self.reward_fn(audio, [final_text])

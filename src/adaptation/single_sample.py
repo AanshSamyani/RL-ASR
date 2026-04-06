@@ -47,8 +47,8 @@ class SingleSampleAdapter(BaseAdapter):
 
         info = self.rl_optimizer.step(candidates, rewards)
 
-        # Final decode with updated parameters
-        final_text = self.model.decode_greedy(audio_features)
+        # Final decode with updated parameters + prompt (Algorithm 1 step 9)
+        final_text = self.model.decode_greedy_with_prompt(audio_features)
 
         # Restore parameters
         self.model.restore_state()

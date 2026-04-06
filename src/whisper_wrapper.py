@@ -68,6 +68,54 @@ class WhisperWithPrompt(torch.nn.Module):
             return result[0].text
         return result.text
 
+    @torch.no_grad()
+    def decode_greedy_with_prompt(self, audio_features: torch.Tensor) -> str:
+        """Greedy decode (temperature=0) WITH prompt injection.
+
+        This is the final decode in Algorithm 1 step 9: y ← Whisper(s; θ, p).
+        Uses the adapted prompt + decoder for inference.
+        """
+        model = self.model
+        prompt_emb = self.prompt()
+
+        sot_token = torch.tensor(
+            [[self.tokenizer.sot]], device=self.device
+        )
+        sot_emb = model.decoder.token_embedding(sot_token)
+        decoder_input_emb = torch.cat([prompt_emb, sot_emb], dim=1)
+
+        tokens: list[int] = []
+        all_tokens = [self.tokenizer.sot]
+
+        for step in range(224):
+            if step > 0:
+                prev_tokens = torch.tensor(
+                    [all_tokens[1:]], device=self.device
+                )
+                prev_emb = model.decoder.token_embedding(prev_tokens)
+                current_emb = torch.cat([decoder_input_emb, prev_emb], dim=1)
+            else:
+                current_emb = decoder_input_emb
+
+            positions = torch.arange(current_emb.shape[1], device=self.device)
+            pos_emb = model.decoder.positional_embedding[positions]
+            x = current_emb + pos_emb
+
+            for block in model.decoder.blocks:
+                x = block(x, audio_features, mask=model.decoder.mask)
+
+            x = model.decoder.ln(x)
+            logits = x[:, -1, :] @ model.decoder.token_embedding.weight.T
+            token_id = logits.argmax(dim=-1).item()
+
+            if token_id == self.tokenizer.eot:
+                break
+
+            tokens.append(token_id)
+            all_tokens.append(token_id)
+
+        return self.tokenizer.decode(tokens).strip()
+
     def decode_with_prompt_stochastic(
         self,
         audio_features: torch.Tensor,
