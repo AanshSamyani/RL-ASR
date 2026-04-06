@@ -16,15 +16,7 @@ from src.adaptation.base import BaseAdapter
 
 
 class PersistentPromptAdapter(BaseAdapter):
-    """Online persistent prompt adaptation with EMA accumulation.
-
-    Key design:
-    - Prompt persists across samples via EMA
-    - Model decoder weights still reset per-sample
-    - Selective accumulation: only update when reward improved
-    - Warmup: faster decay initially, slower later
-    - Optional domain grouping (separate prompts per noise/speaker)
-    """
+    """Online persistent prompt adaptation with EMA accumulation."""
 
     def __init__(
         self,
@@ -47,7 +39,6 @@ class PersistentPromptAdapter(BaseAdapter):
         self._domain_counts: dict[str, int] = {}
 
     def _get_current_decay(self, domain: str | None = None) -> float:
-        """Adaptive decay: lower during warmup for faster initial adaptation."""
         count = (
             self._domain_counts.get(domain, 0)
             if domain and self.use_domain_grouping
@@ -58,7 +49,6 @@ class PersistentPromptAdapter(BaseAdapter):
         return self.ema_decay
 
     def _get_prompt_for_domain(self, domain: str | None) -> torch.Tensor:
-        """Get the appropriate prompt for the given domain."""
         if domain and self.use_domain_grouping:
             if domain not in self._domain_prompts:
                 self._domain_prompts[domain] = self._ema_prompt.clone()
@@ -72,7 +62,6 @@ class PersistentPromptAdapter(BaseAdapter):
         reward_improvement: float,
         domain: str | None = None,
     ) -> None:
-        """Update EMA prompt, only if adaptation helped."""
         if reward_improvement <= 0:
             return
 
@@ -93,7 +82,6 @@ class PersistentPromptAdapter(BaseAdapter):
         audio: torch.Tensor,
         domain: str | None = None,
     ) -> dict:
-        """Adapt with persistent prompt, then selectively update EMA."""
         if mel.dim() == 2:
             mel = mel.unsqueeze(0).to(self.device)
         else:
@@ -105,18 +93,18 @@ class PersistentPromptAdapter(BaseAdapter):
         ema_prompt = self._get_prompt_for_domain(domain)
         self.model.prompt.restore_state(ema_prompt)
 
-        # Baseline decode
+        # Baseline (original Whisper)
         audio_features = self.model.encode(mel)
         baseline_text = self.model.decode_greedy(audio_features)
 
-        # Baseline reward
         baseline_reward_result = self.reward_fn(audio, [baseline_text])
-        if isinstance(baseline_reward_result, dict):
-            baseline_reward = baseline_reward_result["reward"][0].item()
-        else:
-            baseline_reward = baseline_reward_result[0].item()
+        baseline_reward = (
+            baseline_reward_result["reward"][0].item()
+            if isinstance(baseline_reward_result, dict)
+            else baseline_reward_result[0].item()
+        )
 
-        # Generate candidates
+        # Candidates (prompt + temperature, for RL)
         candidates = self.model.generate_candidates(
             audio_features,
             n_candidates=self.n_candidates,
@@ -124,7 +112,6 @@ class PersistentPromptAdapter(BaseAdapter):
         )
         candidate_texts = [c["text"] for c in candidates]
 
-        # Compute rewards
         reward_result = self.reward_fn(audio, candidate_texts)
         rewards = reward_result["reward"] if isinstance(reward_result, dict) else reward_result
 
@@ -133,13 +120,13 @@ class PersistentPromptAdapter(BaseAdapter):
             self.rl_optimizer.store_reference_log_probs(candidates)
         info = self.rl_optimizer.step(candidates, rewards)
 
-        # Snapshot adapted prompt before restoration
+        # Snapshot adapted prompt
         adapted_prompt = self.model.prompt.clone_state()
 
-        # Final decode with updated parameters + prompt
-        adapted_text = self.model.decode_greedy_with_prompt(audio_features)
+        # Final decode with updated decoder weights (whisper.decode)
+        adapted_text = self.model.decode_greedy(audio_features)
 
-        # Score baseline vs adapted
+        # Compare
         comparison = self.reward_fn(audio, [baseline_text, adapted_text])
         comp_rewards = (
             comparison["reward"] if isinstance(comparison, dict) else comparison
@@ -147,7 +134,6 @@ class PersistentPromptAdapter(BaseAdapter):
         adapted_reward = comp_rewards[1].item()
         reward_improvement = adapted_reward - baseline_reward
 
-        # Conservative: keep baseline unless adapted is better
         if adapted_reward > baseline_reward:
             final_text = adapted_text
             info["selected"] = "adapted"
@@ -157,7 +143,6 @@ class PersistentPromptAdapter(BaseAdapter):
 
         self._update_ema(adapted_prompt, reward_improvement, domain=domain)
 
-        # Restore decoder weights
         self.model.restore_state()
 
         info["reward_improvement"] = reward_improvement
@@ -174,7 +159,6 @@ class PersistentPromptAdapter(BaseAdapter):
         }
 
     def reset(self) -> None:
-        """Reset all persistent state."""
         self._ema_prompt = self.model.prompt.clone_state()
         self._sample_count = 0
         self._domain_prompts.clear()

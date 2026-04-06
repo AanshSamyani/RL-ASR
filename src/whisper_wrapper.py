@@ -14,8 +14,11 @@ from src.prompt import LearnablePrompt
 
 
 class WhisperWithPrompt(torch.nn.Module):
-    """Wraps a Whisper model to support learnable decoder prompts
-    and temperature-controlled stochastic decoding for TTA."""
+    """Wraps a Whisper model to support:
+    - Learnable decoder prompts for RL candidate generation
+    - Standard whisper.decode() for baseline and final output
+    - State save/restore for per-sample adaptation
+    """
 
     def __init__(
         self,
@@ -54,7 +57,11 @@ class WhisperWithPrompt(torch.nn.Module):
         return self.model.encoder(mel)
 
     def decode_greedy(self, audio_features: torch.Tensor) -> str:
-        """Standard greedy decode (temperature=0) without prompt."""
+        """Standard Whisper greedy decode. Used for baseline AND final output.
+
+        Uses Whisper's native pipeline — correct KV cache, masking, etc.
+        After an RL step, the updated decoder weights are reflected here.
+        """
         inp = (
             audio_features.squeeze(0)
             if audio_features.dim() == 3
@@ -69,71 +76,22 @@ class WhisperWithPrompt(torch.nn.Module):
             return result[0].text
         return result.text
 
-    def _build_decoder_input(
-        self, all_token_ids: list[int], prompt_emb: torch.Tensor
-    ) -> torch.Tensor:
-        """Build decoder input: prompt (no pos emb) + tokens (with pos emb).
-
-        The prompt tokens are position-free — they act as content-only context.
-        Real tokens (SOT + generated) get positional embeddings starting at 0,
-        preserving Whisper's trained positional expectations.
-        """
-        model = self.model
-        token_ids = torch.tensor([all_token_ids], device=self.device)
-        token_emb = model.decoder.token_embedding(token_ids)  # [1, T, D]
-
-        # Add positional embeddings only to real tokens (0-indexed)
-        n_tokens = token_emb.shape[1]
-        positions = torch.arange(n_tokens, device=self.device)
-        token_emb = token_emb + model.decoder.positional_embedding[positions]
-
-        # Prompt has no positional embedding — concat before tokens
-        return torch.cat([prompt_emb, token_emb], dim=1)  # [1, L+T, D]
-
-    def _run_decoder(
-        self, x: torch.Tensor, audio_features: torch.Tensor
-    ) -> torch.Tensor:
-        """Run through decoder blocks + layernorm → logits."""
-        model = self.model
-        for block in model.blocks if hasattr(model, "blocks") else model.decoder.blocks:
-            x = block(x, audio_features, mask=model.decoder.mask)
-        x = model.decoder.ln(x)
-        return x[:, -1, :] @ model.decoder.token_embedding.weight.T
-
-    @torch.no_grad()
-    def decode_greedy_with_prompt(self, audio_features: torch.Tensor) -> str:
-        """Greedy decode (temperature=0) WITH prompt injection.
-
-        Algorithm 1 step 9: y ← Whisper(s; θ, p).
-        """
-        prompt_emb = self.prompt()  # [1, L, D]
-
-        tokens: list[int] = []
-        all_token_ids = [self.tokenizer.sot]
-
-        for _ in range(224):
-            x = self._build_decoder_input(all_token_ids, prompt_emb)
-            logits = self._run_decoder(x, audio_features)
-            token_id = logits.argmax(dim=-1).item()
-
-            if token_id == self.tokenizer.eot:
-                break
-
-            tokens.append(token_id)
-            all_token_ids.append(token_id)
-
-        return self.tokenizer.decode(tokens).strip()
-
     def decode_with_prompt_stochastic(
         self,
         audio_features: torch.Tensor,
         temperature: float = 0.5,
         max_tokens: int = 224,
     ) -> dict:
-        """Decode with prompt injection and temperature sampling.
+        """Stochastic decode with prompt for RL candidate generation.
 
-        Returns dict with text, tokens, log_probs, and total_log_prob.
+        This is ONLY used to generate candidates and collect differentiable
+        log probs for the RL gradient step. The final output always comes
+        from decode_greedy() which uses Whisper's native pipeline.
+
+        The prompt acts as a learned bias on the decoder's hidden state,
+        steering candidate generation to explore diverse transcriptions.
         """
+        model = self.model
         prompt_emb = self.prompt()  # [1, L, D]
 
         tokens: list[int] = []
@@ -141,9 +99,25 @@ class WhisperWithPrompt(torch.nn.Module):
         all_token_ids = [self.tokenizer.sot]
 
         for _ in range(max_tokens):
-            x = self._build_decoder_input(all_token_ids, prompt_emb)
-            logits = self._run_decoder(x, audio_features)
+            # Standard Whisper embedding: token + positional
+            token_tensor = torch.tensor([all_token_ids], device=self.device)
+            x = model.decoder.token_embedding(token_tensor)
+            x = x + model.decoder.positional_embedding[: x.shape[1]]
+            x = x.to(audio_features.dtype)
 
+            # Prepend prompt (no positional embedding — acts as content bias)
+            x = torch.cat([prompt_emb.to(x.dtype), x], dim=1)
+
+            # Run decoder blocks
+            for block in model.decoder.blocks:
+                x = block(x, audio_features, mask=model.decoder.mask)
+
+            x = model.decoder.ln(x)
+            logits = (
+                x[:, -1, :] @ model.decoder.token_embedding.weight.to(x.dtype).T
+            ).float()
+
+            # Temperature sampling
             if temperature > 0:
                 probs = F.softmax(logits / temperature, dim=-1)
                 next_token = torch.multinomial(probs, 1).squeeze(-1)
@@ -152,7 +126,7 @@ class WhisperWithPrompt(torch.nn.Module):
 
             token_id = next_token.item()
 
-            # Keep log prob in graph for RL gradients
+            # Differentiable log prob for RL
             log_prob = F.log_softmax(logits, dim=-1)
             token_log_prob = log_prob[0, token_id]
 
