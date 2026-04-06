@@ -6,14 +6,15 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
-    "torch>=2.0.0",
+    "torch>=2.0.0,<2.7",
+    "torchvision>=0.15.0,<0.22",
+    "torchaudio>=2.0.0,<2.7",
     "openai-whisper>=20231117",
     "laion-clap>=1.1.4",
     "transformers>=4.36.0",
     "pyyaml>=6.0",
     "numpy>=1.24.0",
     "scipy>=1.10.0",
-    "torchvision>=0.15.0",
     "soundfile>=0.12.0",
 ]
 
@@ -53,6 +54,15 @@ known-first-party = ["src"]
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchvision = { index = "pytorch-cu124" }
+torchaudio = { index = "pytorch-cu124" }
 
 [build-system]
 requires = ["hatchling"]
