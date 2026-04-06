@@ -17,8 +17,8 @@ decoding:
 
 rl:
   method: "reinforce"
-  base_lr: 1.0e-5
-  prompt_lr_scale: 100.0
+  base_lr: 1.0e-6
+  prompt_lr_scale: 10.0
 
 reward:
   type: "clap"

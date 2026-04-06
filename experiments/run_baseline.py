@@ -90,7 +90,7 @@ def main() -> None:
     )
     reward_fn = CLAPReward(device=device)
 
-    rl = REINFORCE(base_lr=1e-5, prompt_lr_scale=100.0)
+    rl = REINFORCE(base_lr=1e-6, prompt_lr_scale=10.0)
     rl.setup_optimizer(model.get_trainable_params())
 
     adapter = SingleSampleAdapter(

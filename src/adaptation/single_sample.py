@@ -10,8 +10,8 @@ from src.adaptation.base import BaseAdapter
 class SingleSampleAdapter(BaseAdapter):
     """Per-sample TTA: adapt, decode, then restore all parameters.
 
-    Reproduces the original ASR-TRA approach where each utterance
-    is treated independently with full parameter restoration.
+    Safety mechanism: picks the best output among {baseline, candidates,
+    adapted} by reward score, so adaptation can never degrade below baseline.
     """
 
     def adapt_and_decode(
@@ -37,7 +37,7 @@ class SingleSampleAdapter(BaseAdapter):
         )
         candidate_texts = [c["text"] for c in candidates]
 
-        # Compute rewards
+        # Compute rewards for candidates
         reward_result = self.reward_fn(audio, candidate_texts)
         rewards = reward_result["reward"] if isinstance(reward_result, dict) else reward_result
 
@@ -47,8 +47,21 @@ class SingleSampleAdapter(BaseAdapter):
 
         info = self.rl_optimizer.step(candidates, rewards)
 
-        # Final decode with updated parameters + prompt (Algorithm 1 step 9)
-        final_text = self.model.decode_greedy_with_prompt(audio_features)
+        # Final decode with adapted prompt + decoder
+        adapted_text = self.model.decode_greedy_with_prompt(audio_features)
+
+        # Safety: pick best among baseline, best candidate, and adapted output
+        all_texts = [baseline_text, adapted_text] + candidate_texts
+        all_reward_result = self.reward_fn(audio, all_texts)
+        all_rewards = (
+            all_reward_result["reward"]
+            if isinstance(all_reward_result, dict)
+            else all_reward_result
+        )
+        best_idx = all_rewards.argmax().item()
+        final_text = all_texts[best_idx]
+
+        info["selected"] = ["baseline", "adapted", *[f"cand_{i}" for i in range(len(candidate_texts))]][best_idx]
 
         # Restore parameters
         self.model.restore_state()
@@ -56,6 +69,7 @@ class SingleSampleAdapter(BaseAdapter):
         return {
             "text": final_text,
             "baseline_text": baseline_text,
+            "adapted_text": adapted_text,
             "candidate_texts": candidate_texts,
             "rewards": rewards,
             "info": info,

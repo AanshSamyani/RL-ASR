@@ -52,11 +52,11 @@ def build_components(
 ) -> SingleSampleAdapter | PersistentPromptAdapter:
     """Build RL, reward, and adapter from a config dict."""
     if config["rl"] == "reinforce":
-        rl: REINFORCE | GRPO = REINFORCE(base_lr=1e-5, prompt_lr_scale=100.0)
+        rl: REINFORCE | GRPO = REINFORCE(base_lr=1e-6, prompt_lr_scale=10.0)
     else:
         rl = GRPO(
-            base_lr=1e-5,
-            prompt_lr_scale=100.0,
+            base_lr=1e-6,
+            prompt_lr_scale=10.0,
             clip_eps=0.2,
             kl_coeff=0.01,
             token_level=True,

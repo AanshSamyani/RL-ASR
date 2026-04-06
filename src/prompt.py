@@ -17,15 +17,16 @@ class LearnablePrompt(nn.Module):
         super().__init__()
         self.length = length
         self.embed_dim = embed_dim
-        self.prompt = nn.Parameter(torch.randn(1, length, embed_dim) * 0.02)
+        # Zero-init so the prompt is a no-op before adaptation
+        self.prompt = nn.Parameter(torch.zeros(1, length, embed_dim))
 
     def forward(self) -> torch.Tensor:
         """Return prompt embeddings [1, L, D]."""
         return self.prompt
 
     def reset(self) -> None:
-        """Re-initialize prompt to random values."""
-        nn.init.normal_(self.prompt, std=0.02)
+        """Re-initialize prompt to zeros."""
+        nn.init.zeros_(self.prompt)
 
     def clone_state(self) -> torch.Tensor:
         """Snapshot current prompt for later restoration."""
